@@ -60,59 +60,402 @@
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 <script>
 'use strict';
-const $=id=>document.getElementById(id);
-const storeKey='nextstep_shs_apps_v1',reqKey='nextstep_shs_reqs_v1',sentKey='nextstep_shs_reminders_v1';
-const defaultReqs=['PSA birth certificate','Grade 11 report card','Grade 12 report card (if required)','Certificate of enrollment / expected graduation','Good moral character certificate','ID photo','Application form'];
-function readArray(key,fallback){try{const value=JSON.parse(localStorage.getItem(key));return Array.isArray(value)?value:fallback}catch{return fallback}}
-let apps=readArray(storeKey,[]).filter(a=>a&&typeof a==='object'&&a.id&&a.school&&a.deadline);
-let reqs=readArray(reqKey,defaultReqs.map((name,i)=>({id:`r${i}`,name,done:false}))).filter(r=>r&&r.id&&typeof r.name==='string');
-let toastTimer;
-function makeId(){return globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(36).slice(2)}`}
-function save(){try{localStorage.setItem(storeKey,JSON.stringify(apps));localStorage.setItem(reqKey,JSON.stringify(reqs));return true}catch{showToast('Could not save: browser storage may be full or unavailable.');return false}}
-function esc(s=''){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c]))}
-function dayDiff(date){if(!/^\d{4}-\d{2}-\d{2}$/.test(date||''))return NaN;const [y,m,d]=date.split('-').map(Number),target=Date.UTC(y,m-1,d),now=new Date();return Math.round((target-Date.UTC(now.getFullYear(),now.getMonth(),now.getDate()))/86400000)}
-function formatDate(date){if(!date)return 'Not set';const [y,m,d]=date.split('-').map(Number);return new Date(y,m-1,d).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'})}
-function showToast(message,undo){const toast=$('toast');toast.innerHTML=`${esc(message)}${undo?' <button type="button" class="secondary" id="undoDelete">Undo</button>':''}`;toast.classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.classList.add('hidden'),3500);if(undo){toast.querySelector('#undoDelete')?.addEventListener('click',()=>{toast.classList.add('hidden');});}}
-function statusClass(status){return status==='Accepted'||status==='Submitted'?'green':status==='Rejected'?'red':''}
-function displayType(a){return a.type==='Other'&&a.otherType?`Other: ${a.otherType}`:(a.type||'Unspecified')}
-function render(){
-  $('todayLabel').textContent=new Date().toLocaleDateString(undefined,{weekday:'long',year:'numeric',month:'long',day:'numeric'});
-  const active=apps.filter(a=>!['Accepted','Rejected'].includes(a.status));
-  $('total').textContent=apps.length;$('soon').textContent=active.filter(a=>dayDiff(a.deadline)>=0&&dayDiff(a.deadline)<=7).length;$('overdue').textContent=active.filter(a=>dayDiff(a.deadline)<0).length;
-  const q=$('search').value.trim().toLowerCase(),st=$('statusFilter').value,ty=$('typeFilter').value,sort=$('sortBy').value;
-  const shown=apps.filter(a=>`${a.school} ${a.type||''} ${a.otherType||''}`.toLowerCase().includes(q)&&(!st||a.status===st)&&(!ty||a.type===ty));
-  shown.sort((a,b)=>sort==='school'?a.school.localeCompare(b.school):sort==='priority'?({High:0,Medium:1,Low:2}[a.priority]??1)-({High:0,Medium:1,Low:2}[b.priority]??1)||a.deadline.localeCompare(b.deadline):a.deadline.localeCompare(b.deadline));
-  $('appList').innerHTML=shown.length?shown.map(a=>{const days=dayDiff(a.deadline),closed=['Accepted','Rejected'].includes(a.status),due=days<0?`${Math.abs(days)} day(s) overdue`:days===0?'Due today':days===1?'Due tomorrow':`${days} day(s) left`;return `<article class="app-card ${statusClass(a.status)||''} ${closed?'closed':''}"><div class="app-head"><h3>${esc(a.school)}</h3><div class="meta">${esc(displayType(a))}</div></div><div class="app-body"><div class="smallnote">Deadline: ${formatDate(a.deadline)} · ${due}</div><div class="smallnote">Status: ${esc(a.status||'Not started')} · Priority: ${esc(a.priority||'Medium')}</div>${a.notes?`<p>${esc(a.notes)}</p>`:''}</div><div class="actions"><button class="secondary" type="button" data-action="edit" data-id="${a.id}">Edit</button><button class="secondary danger" type="button" data-action="delete" data-id="${a.id}">Delete</button></div></article>`;}).join(''):'<div class="empty">No applications match your filters.</div>';
+const $ = (id) => document.getElementById(id);
+const storeKey = 'nextstep_shs_apps_v1', reqKey = 'nextstep_shs_reqs_v1', sentKey = 'nextstep_shs_reminders_v1';
+const defaultReqs = ['PSA birth certificate', 'Grade 11 report card', 'Grade 12 report card (if required)', 'Certificate of enrollment / expected graduation', 'Good moral character certificate', 'ID photo', 'Application form'];
+
+function readArray(key, fallback) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key));
+    return Array.isArray(value) ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+let apps = readArray(storeKey, []).filter(a => a && typeof a === 'object' && a.id && a.school && a.deadline);
+let reqs = readArray(reqKey, defaultReqs.map((name, i) => ({ id: `r${i}`, name, done: false }))).filter(r => r && r.id && typeof r.name === 'string');
+let toastTimer = null;
+let lastDeleted = null;
+let returnFocus = null;
+
+function makeId() {
+  return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function save() {
+  try {
+    localStorage.setItem(storeKey, JSON.stringify(apps));
+    localStorage.setItem(reqKey, JSON.stringify(reqs));
+    return true;
+  } catch {
+    showToast('Could not save: browser storage may be full or unavailable.');
+    return false;
+  }
+}
+
+function esc(s = '') {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function dayDiff(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return NaN;
+  const [y, m, d] = date.split('-').map(Number);
+  const target = Date.UTC(y, m - 1, d);
+  const now = new Date();
+  return Math.round((target - Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+}
+
+function formatDate(date) {
+  if (!date) return 'Not set';
+  const [y, m, d] = date.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function showToast(message, undo = false) {
+  const toast = $('toast');
+  toast.innerHTML = `${esc(message)}${undo ? ' <button type="button" class="secondary" id="undoDelete">Undo</button>' : ''}`;
+  toast.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.add('hidden'), 3500);
+
+  if (undo) {
+    const undoBtn = $('undoDelete');
+    if (undoBtn) {
+      undoBtn.addEventListener('click', () => {
+        if (!lastDeleted) return;
+        apps.splice(lastDeleted.index, 0, lastDeleted.app);
+        save();
+        render();
+        lastDeleted = null;
+        showToast('Deleted application restored.');
+      }, { once: true });
+    }
+  }
+}
+
+function statusClass(status) {
+  return status === 'Accepted' || status === 'Submitted' ? 'green' : status === 'Rejected' ? 'red' : '';
+}
+
+function displayType(a) {
+  return a.type === 'Other' && a.otherType ? `Other: ${a.otherType}` : (a.type || 'Unspecified');
+}
+
+function render() {
+  $('todayLabel').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const active = apps.filter(a => !['Accepted', 'Rejected'].includes(a.status));
+  $('total').textContent = apps.length;
+  $('soon').textContent = active.filter(a => dayDiff(a.deadline) >= 0 && dayDiff(a.deadline) <= 7).length;
+  $('overdue').textContent = active.filter(a => dayDiff(a.deadline) < 0).length;
+
+  const q = $('search').value.trim().toLowerCase();
+  const st = $('statusFilter').value;
+  const ty = $('typeFilter').value;
+  const sort = $('sortBy').value;
+
+  const shown = apps.filter(a => `${a.school} ${a.type || ''} ${a.otherType || ''}`.toLowerCase().includes(q) && (!st || a.status === st) && (!ty || a.type === ty));
+  shown.sort((a, b) => {
+    if (sort === 'school') return a.school.localeCompare(b.school);
+    if (sort === 'priority') {
+      return ({ High: 0, Medium: 1, Low: 2 }[a.priority] ?? 1) - ({ High: 0, Medium: 1, Low: 2 }[b.priority] ?? 1) || a.deadline.localeCompare(b.deadline);
+    }
+    return a.deadline.localeCompare(b.deadline);
+  });
+
+  $('appList').innerHTML = shown.length ? shown.map(a => {
+    const days = dayDiff(a.deadline);
+    const closed = ['Accepted', 'Rejected'].includes(a.status);
+    const due = days < 0 ? `${Math.abs(days)} day(s) overdue` : days === 0 ? 'Due today' : days === 1 ? 'Due tomorrow' : `${days} days left`;
+    return `<article class="app-card ${statusClass(a.status) || ''} ${closed ? 'closed' : ''}">
+      <div class="app-head"><h3>${esc(a.school)}</h3><div class="meta">${esc(displayType(a))}</div></div>
+      <div class="app-body">
+        <div class="smallnote">Deadline: ${formatDate(a.deadline)} — ${due}</div>
+        <div class="smallnote">Status: ${esc(a.status || 'Not started')} — Priority: ${esc(a.priority || 'Medium')}</div>
+        ${a.notes ? `<p>${esc(a.notes)}</p>` : ''}
+      </div>
+      <div class="actions">
+        <button class="secondary" type="button" data-action="edit" data-id="${a.id}">Edit</button>
+        <button class="secondary danger" type="button" data-action="delete" data-id="${a.id}">Delete</button>
+      </div>
+    </article>`;
+  }).join('') : '<div class="empty">No applications match your filters.</div>';
+
   renderReqs();
 }
-function renderReqs(){const done=reqs.filter(r=>r.done).length;$('reqList').innerHTML=reqs.length?`<div class="progress" role="progressbar" aria-label="Checklist progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(done/reqs.length*100)}"><span style="width:${Math.round(done/reqs.length*100)}%"></span></div><div class="progress-text">${done}/${reqs.length} completed</div>${reqs.map(r=>`<label class="check-item"><input type="checkbox" data-req-toggle="${r.id}" ${r.done?'checked':''}><span>${esc(r.name)}</span><button type="button" class="mini danger" data-req-delete="${r.id}" aria-label="Delete requirement">✕</button></label>`).join('')}`:'<div class="empty">No requirements added yet.</div>';
+
+function renderReqs() {
+  const done = reqs.filter(r => r.done).length;
+  $('reqList').innerHTML = reqs.length ? `<div class="progress" role="progressbar" aria-label="Checklist progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round((done / reqs.length) * 100)}"><span style="width:${Math.round((done / reqs.length) * 100)}%"></span></div><div class="progress-text">${done}/${reqs.length} completed</div>${reqs.map(r => `<label class="check-item"><input type="checkbox" data-req-toggle="${r.id}" ${r.done ? 'checked' : ''}><span>${esc(r.name)}</span><button type="button" class="mini danger" data-req-delete="${r.id}" aria-label="Delete requirement">✕</button></label>`).join('')}` : '<div class="empty">No requirements added yet.</div>';
 }
-function updateOtherTypeField(){const isOther=$('type').value==='Other';$('otherTypeWrap').classList.toggle('hidden',!isOther);$('otherType').required=isOther;if(!isOther)$('otherType').value='';}
-let returnFocus=null;
-function openModal(a=null){returnFocus=document.activeElement;$('appForm').reset();$('editId').value=a?.id||'';$('modalTitle').textContent=a?'Edit application':'Add application';if(a){$('school').value=a.school||'';$('type').value=a.type||'';$('otherType').value=a.otherType||'';$('course').value='';$('deadline').value=a.deadline||'';$('opens').value=a.opens||'';$('priority').value=a.priority||'Medium';$('status').value=a.status||'Not started';$('reminderDays').value=String(a.reminderDays??0);$('link').value=a.link||'';$('notes').value=a.notes||'';}else{$('priority').value='Medium';$('status').value='Not started';$('reminderDays').value='0';}updateOtherTypeField();$('appModal').classList.remove('hidden');$('appModal').setAttribute('aria-hidden','false');}
-function closeModal(){ $('appModal').classList.add('hidden');$('appModal').setAttribute('aria-hidden','true');if(returnFocus) returnFocus.focus(); }
-$('addAppBtn').addEventListener('click',()=>openModal());
-$('type').addEventListener('change',updateOtherTypeField);
-$('closeModal').addEventListener('click',closeModal);$('cancelModal').addEventListener('click',closeModal);
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('appModal').classList.contains('hidden'))closeModal();});
-$('appModal').addEventListener('click',e=>{if(e.target===$('appModal'))closeModal()});
-$('appForm').addEventListener('submit',e=>{e.preventDefault();const deadline=$('deadline').value,opens=$('opens').value;if(opens&&opens>deadline){$('opens').setCustomValidity('Opening date must be on or before the deadline.');$('opens').reportValidity();return}$('opens').setCustomValidity('');const form={id:$('editId').value||makeId(),school:$('school').value.trim(),type:$('type').value,otherType:$('type').value==='Other'?$('otherType').value.trim():'',deadline,opens:opens||'',priority:$('priority').value,status:$('status').value,reminderDays:Number($('reminderDays').value||0),link:$('link').value.trim(),notes:$('notes').value.trim()};const existing=apps.findIndex(x=>x.id===form.id);if(existing>=0){apps[existing]=form}else{apps.push(form);}save();render();closeModal();showToast(existing>=0?'Application updated.':'Application added.');});
-$('appList').addEventListener('click',e=>{const b=e.target.closest('button[data-action]');if(!b)return;const a=apps.find(x=>x.id===b.dataset.id);if(!a)return;if(b.dataset.action==='edit')openModal(a);if(b.dataset.action==='delete'){apps=apps.filter(x=>x.id!==a.id);save();render();showToast('Application deleted.',true);}});
-$('reqForm').addEventListener('submit',e=>{e.preventDefault();const name=$('reqName').value.trim();if(!name)return;reqs.push({id:makeId(),name,done:false});$('reqName').value='';save();renderReqs();showToast('Requirement added.');});
-$('reqList').addEventListener('change',e=>{const id=e.target.dataset.reqToggle;if(!id)return;const r=reqs.find(x=>x.id===id);if(r){r.done=e.target.checked;save();renderReqs();}});
-$('reqList').addEventListener('click',e=>{const id=e.target.dataset.reqDelete;if(!id)return;reqs=reqs.filter(r=>r.id!==id);save();renderReqs();showToast('Requirement removed.');});
-document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>selectTab(b)));function selectTab(b){document.querySelectorAll('.tab').forEach(x=>{const active=x===b;x.setAttribute('aria-selected',String(active));x.tabIndex=active?0:-1;});const target=b.dataset.tab;document.querySelectorAll('[role="tabpanel"]').forEach(panel=>{const active=panel.id===target;panel.classList.toggle('hidden',!active);panel.setAttribute('aria-hidden',String(!active));});}
-document.querySelector('.tabs').addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const tabs=[...document.querySelectorAll('.tab')];const current=tabs.indexOf(document.activeElement);let next=0;if(e.key==='ArrowRight')next=(current+1)%tabs.length;if(e.key==='ArrowLeft')next=(current-1+tabs.length)%tabs.length;if(e.key==='Home')next=0;if(e.key==='End')next=tabs.length-1;tabs[next].focus();selectTab(tabs[next]);});
-['search','statusFilter','typeFilter','sortBy'].forEach(id=>$(id).addEventListener(id==='search'?'input':'change',render));
-function download(name,text,type){const url=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),500);} 
-$('exportBtn').addEventListener('click',()=>download('nextstep-backup.json',JSON.stringify({version:1,apps,reqs},null,2),'application/json'));
-$('csvBtn').addEventListener('click',()=>{const cols=['School','Type','Type specification','Deadline','Status','Priority','Application link','Notes'];const rows=apps.map(a=>[a.school,a.type,a.otherType||'',a.deadline,a.status,a.priority,a.link,a.notes].map(v=>`"${String(v??'').replace(/"/g,'""')}"`).join(','));download('nextstep-backup.csv',[cols.join(','),...rows].join('\n'),'text/csv');});
-$('icsBtn').addEventListener('click',()=>{const escIcs=s=>String(s||'').replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\n/g,'\\n');const events=apps.filter(a=>a.deadline).map(a=>`BEGIN:VEVENT\nUID:${a.id}\nDTSTAMP:${new Date().toISOString().replace(/[-:]/g,'').replace(/\.\d{3}Z$/,'Z')}\nDTSTART:${a.deadline.replace(/-/g,'')}\nSUMMARY:${escIcs(`${a.school} — ${displayType(a)}`)}\nEND:VEVENT`).join('\n');download('nextstep-calendar.ics',['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//NextStep//EN',events,'END:VCALENDAR'].join('\n'),'text/calendar');});
-$('importFile').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{const data=JSON.parse(await file.text());if(!data||!Array.isArray(data.apps)||!Array.isArray(data.reqs)){throw new Error('Invalid backup format.');}apps=data.apps.filter(a=>a&&a.id&&a.school&&a.deadline);reqs=data.reqs.filter(r=>r&&r.id&&typeof r.name==='string');save();render();showToast('Backup imported.');}catch{showToast('Could not import backup.');}finally{e.target.value='';}});
-$('notifyBtn').addEventListener('click',async()=>{if(!('Notification'in window)){showToast('Notifications are not supported by this browser.');return}const result=await Notification.requestPermission();showToast(result==='granted'?'Notifications enabled.':'Notifications not enabled.');});
-function checkReminders(){if(!('Notification'in window)||Notification.permission!=='granted')return;let sent;try{sent=JSON.parse(localStorage.getItem(sentKey)||'[]')}catch{return;}const pending=apps.filter(a=>a.deadline&&a.reminderDays&&a.reminderDays>0&&a.status!=='Accepted'&&a.status!=='Rejected');pending.forEach(a=>{const date=new Date(a.deadline);const diff=Math.round((Date.UTC(date.getFullYear(),date.getMonth(),date.getDate())-Date.UTC(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()))/86400000);if(diff===a.reminderDays&&!sent.includes(a.id)){new Notification(`Deadline reminder: ${a.school}`,{body:`${displayType(a)} is due ${formatDate(a.deadline)}.`});sent.push(a.id);}});localStorage.setItem(sentKey,JSON.stringify(sent));}
-render();checkReminders();setInterval(checkReminders,60*60*1000);
-if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(()=>{});
+
+function updateOtherTypeField() {
+  const isOther = $('type').value === 'Other';
+  $('otherTypeWrap').classList.toggle('hidden', !isOther);
+  $('otherType').required = isOther;
+  if (!isOther) $('otherType').value = '';
+}
+
+function openModal(a = null) {
+  returnFocus = document.activeElement;
+  $('appForm').reset();
+  $('editId').value = a?.id || '';
+  $('modalTitle').textContent = a ? 'Edit application' : 'Add application';
+
+  if (a) {
+    $('school').value = a.school || '';
+    $('type').value = a.type || '';
+    $('otherType').value = a.otherType || '';
+    $('deadline').value = a.deadline || '';
+    $('opens').value = a.opens || '';
+    $('priority').value = a.priority || 'Medium';
+    $('status').value = a.status || 'Not started';
+    $('reminderDays').value = String(a.reminderDays ?? 0);
+    $('link').value = a.link || '';
+    $('notes').value = a.notes || '';
+  } else {
+    $('priority').value = 'Medium';
+    $('status').value = 'Not started';
+    $('reminderDays').value = '0';
+  }
+
+  updateOtherTypeField();
+  $('appModal').classList.remove('hidden');
+  $('appModal').setAttribute('aria-hidden', 'false');
+}
+
+function closeModal() {
+  $('appModal').classList.add('hidden');
+  $('appModal').setAttribute('aria-hidden', 'true');
+  if (returnFocus) returnFocus.focus();
+}
+
+$('addAppBtn').addEventListener('click', () => openModal());
+$('type').addEventListener('change', updateOtherTypeField);
+$('closeModal').addEventListener('click', closeModal);
+$('cancelModal').addEventListener('click', closeModal);
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('appModal').classList.contains('hidden')) closeModal();
+});
+
+$('appModal').addEventListener('click', (e) => {
+  if (e.target === $('appModal')) closeModal();
+});
+
+$('appForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const deadline = $('deadline').value;
+  const opens = $('opens').value;
+
+  if (opens && opens > deadline) {
+    $('opens').setCustomValidity('Opening date must be on or before the deadline.');
+    $('opens').reportValidity();
+    return;
+  }
+
+  $('opens').setCustomValidity('');
+
+  const form = {
+    id: $('editId').value || makeId(),
+    school: $('school').value.trim(),
+    type: $('type').value,
+    otherType: $('type').value === 'Other' ? $('otherType').value.trim() : '',
+    deadline,
+    opens: opens || '',
+    priority: $('priority').value,
+    status: $('status').value,
+    reminderDays: Number($('reminderDays').value || 0),
+    link: $('link').value.trim(),
+    notes: $('notes').value.trim()
+  };
+
+  const existingIndex = apps.findIndex(x => x.id === form.id);
+  if (existingIndex >= 0) {
+    apps[existingIndex] = form;
+  } else {
+    apps.push(form);
+  }
+
+  save();
+  render();
+  closeModal();
+  showToast(existingIndex >= 0 ? 'Application updated.' : 'Application added.');
+});
+
+$('appList').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-action]');
+  if (!b) return;
+  const a = apps.find(x => x.id === b.dataset.id);
+  if (!a) return;
+
+  if (b.dataset.action === 'edit') {
+    openModal(a);
+    return;
+  }
+
+  if (b.dataset.action === 'delete') {
+    const confirmed = window.confirm(`Delete "${a.school}"? This action cannot be undone.`);
+    if (!confirmed) return;
+
+    const index = apps.findIndex(x => x.id === a.id);
+    const deleted = apps.splice(index, 1)[0];
+    save();
+    render();
+    lastDeleted = { app: deleted, index };
+    showToast(`Application for ${deleted.school} deleted.`, true);
+  }
+});
+
+$('reqForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const name = $('reqName').value.trim();
+  if (!name) return;
+  reqs.push({ id: makeId(), name, done: false });
+  $('reqName').value = '';
+  save();
+  renderReqs();
+  showToast('Requirement added.');
+});
+
+$('reqList').addEventListener('change', (e) => {
+  const id = e.target.dataset.reqToggle;
+  if (!id) return;
+  const r = reqs.find(x => x.id === id);
+  if (r) {
+    r.done = e.target.checked;
+    save();
+    renderReqs();
+  }
+});
+
+$('reqList').addEventListener('click', (e) => {
+  const id = e.target.dataset.reqDelete;
+  if (!id) return;
+  const confirmed = window.confirm('Delete this requirement?');
+  if (!confirmed) return;
+  reqs = reqs.filter(r => r.id !== id);
+  save();
+  renderReqs();
+  showToast('Requirement removed.');
+});
+
+document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => selectTab(b)));
+
+function selectTab(b) {
+  document.querySelectorAll('.tab').forEach((x) => {
+    const active = x === b;
+    x.setAttribute('aria-selected', String(active));
+    x.tabIndex = active ? 0 : -1;
+  });
+
+  const target = b.dataset.tab;
+  document.querySelectorAll('[role="tabpanel"]').forEach((panel) => {
+    const active = panel.id === target;
+    panel.classList.toggle('hidden', !active);
+    panel.setAttribute('aria-hidden', String(!active));
+  });
+}
+
+document.querySelector('.tabs').addEventListener('keydown', (e) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  e.preventDefault();
+  const tabs = [...document.querySelectorAll('.tab')];
+  const current = tabs.indexOf(document.activeElement);
+  let next = 0;
+
+  if (e.key === 'ArrowRight') next = (current + 1) % tabs.length;
+  if (e.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+  if (e.key === 'Home') next = 0;
+  if (e.key === 'End') next = tabs.length - 1;
+
+  tabs[next].focus();
+  selectTab(tabs[next]);
+});
+
+['search', 'statusFilter', 'typeFilter', 'sortBy'].forEach((id) => $(id).addEventListener(id === 'search' ? 'input' : 'change', render));
+
+function download(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 500);
+}
+
+$('exportBtn').addEventListener('click', () => download('nextstep-backup.json', JSON.stringify({ version: 1, apps, reqs }, null, 2), 'application/json'));
+
+$('csvBtn').addEventListener('click', () => {
+  const cols = ['School', 'Type', 'Type specification', 'Deadline', 'Status', 'Priority', 'Application link', 'Notes'];
+  const rows = apps.map(a => [a.school, a.type, a.otherType || '', a.deadline, a.status, a.priority, a.link, a.notes]);
+  const csv = [cols, ...rows].map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  download('nextstep-backup.csv', csv, 'text/csv');
+});
+
+$('icsBtn').addEventListener('click', () => {
+  const escIcs = s => String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+  const events = apps.filter(a => a.deadline).map(a => `BEGIN:VEVENT\nUID:${a.id}\nDTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')}\nDTSTART:${a.deadline.replace(/-/g, '')}\nDTEND:${a.deadline.replace(/-/g, '')}\nSUMMARY:${escIcs(a.school)}\nDESCRIPTION:${escIcs(a.notes || a.type || 'Deadline')}\nEND:VEVENT`).join('\n');
+  download('nextstep-calendar.ics', `BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//NextStep//EN\n${events}\nEND:VCALENDAR`, 'text/calendar');
+});
+
+$('importFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || !Array.isArray(data.apps) || !Array.isArray(data.reqs)) {
+      throw new Error('Invalid backup format');
+    }
+    apps = data.apps.filter(a => a && a.id && a.school && a.deadline);
+    reqs = data.reqs.filter(r => r && r.id && typeof r.name === 'string');
+    save();
+    render();
+    showToast('Backup imported.');
+  } catch {
+    showToast('Could not import backup.');
+  } finally {
+    e.target.value = '';
+  }
+});
+
+$('notifyBtn').addEventListener('click', async () => {
+  if (!('Notification' in window)) {
+    showToast('Notifications are not supported by this browser.');
+    return;
+  }
+  const result = await Notification.requestPermission();
+  showToast(result === 'granted' ? 'Notifications enabled.' : 'Notifications not enabled.');
+});
+
+function checkReminders() {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  let sent;
+  try {
+    sent = JSON.parse(localStorage.getItem(sentKey) || '[]');
+  } catch {
+    return;
+  }
+
+  const pending = apps.filter(a => a.deadline && a.reminderDays && a.reminderDays > 0 && a.status !== 'Accepted' && a.status !== 'Rejected');
+  pending.forEach((a) => {
+    const diff = dayDiff(a.deadline);
+    if (diff === a.reminderDays && !sent.includes(a.id)) {
+      new Notification(`Deadline reminder: ${a.school}`, { body: `${a.deadline} is coming up.` });
+      sent.push(a.id);
+    }
+  });
+
+  localStorage.setItem(sentKey, JSON.stringify(sent));
+}
+
+render();
+checkReminders();
+setInterval(checkReminders, 60 * 60 * 1000);
+
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
+}
 </script>
 </body>
 </html>
