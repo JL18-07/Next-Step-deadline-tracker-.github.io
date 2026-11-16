@@ -1,5 +1,5 @@
 const CACHE_NAME = 'nextstep-shell-v1';
-const APP_FILES = ['./', './index.html'];
+const APP_FILES = ['./', './index.html', './style.css'];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(APP_FILES)));
