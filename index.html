@@ -57,6 +57,19 @@
     </div><div class="dialogfoot"><button type="button" class="secondary" id="cancelModal">Cancel</button><button class="primary" type="submit">Save application</button></div></form>
   </div>
 </div>
+
+<div class="modal hidden" id="confirmModal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" aria-hidden="true">
+  <div class="dialog confirm-dialog">
+    <div class="confirm-icon" aria-hidden="true">!</div>
+    <h2 id="confirmTitle">Confirm action</h2>
+    <p id="confirmText">Are you sure?</p>
+    <div class="dialogfoot confirm-actions">
+      <button type="button" class="secondary" id="cancelConfirm">Cancel</button>
+      <button type="button" class="danger confirm-delete" id="confirmDelete">Delete</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 <script>
 'use strict';
@@ -78,6 +91,7 @@ let reqs = readArray(reqKey, defaultReqs.map((name, i) => ({ id: `r${i}`, name, 
 let toastTimer = null;
 let lastDeleted = null;
 let returnFocus = null;
+let pendingConfirm = null;
 
 function makeId() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -133,6 +147,34 @@ function showToast(message, undo = false) {
     }
   }
 }
+
+function showConfirm(message, onConfirm) {
+  pendingConfirm = onConfirm;
+  $('confirmText').textContent = message;
+  $('confirmModal').classList.remove('hidden');
+  $('confirmModal').setAttribute('aria-hidden', 'false');
+  $('confirmDelete').focus();
+}
+
+function closeConfirm() {
+  pendingConfirm = null;
+  $('confirmModal').classList.add('hidden');
+  $('confirmModal').setAttribute('aria-hidden', 'true');
+}
+
+$('cancelConfirm').addEventListener('click', closeConfirm);
+$('confirmDelete').addEventListener('click', () => {
+  if (pendingConfirm) pendingConfirm();
+  closeConfirm();
+});
+$('confirmModal').addEventListener('click', (e) => {
+  if (e.target === $('confirmModal')) closeConfirm();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('appModal').classList.contains('hidden')) closeModal();
+  if (e.key === 'Escape' && !$('confirmModal').classList.contains('hidden')) closeConfirm();
+});
 
 function statusClass(status) {
   return status === 'Accepted' || status === 'Submitted' ? 'green' : status === 'Rejected' ? 'red' : '';
@@ -235,10 +277,6 @@ $('type').addEventListener('change', updateOtherTypeField);
 $('closeModal').addEventListener('click', closeModal);
 $('cancelModal').addEventListener('click', closeModal);
 
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !$('appModal').classList.contains('hidden')) closeModal();
-});
-
 $('appModal').addEventListener('click', (e) => {
   if (e.target === $('appModal')) closeModal();
 });
@@ -295,15 +333,14 @@ $('appList').addEventListener('click', (e) => {
   }
 
   if (b.dataset.action === 'delete') {
-    const confirmed = window.confirm(`Delete "${a.school}"? This action cannot be undone.`);
-    if (!confirmed) return;
-
-    const index = apps.findIndex(x => x.id === a.id);
-    const deleted = apps.splice(index, 1)[0];
-    save();
-    render();
-    lastDeleted = { app: deleted, index };
-    showToast(`Application for ${deleted.school} deleted.`, true);
+    showConfirm(`Delete "${a.school}"? This action cannot be undone.`, () => {
+      const index = apps.findIndex(x => x.id === a.id);
+      const deleted = apps.splice(index, 1)[0];
+      save();
+      render();
+      lastDeleted = { app: deleted, index };
+      showToast(`Application for ${deleted.school} deleted.`, true);
+    });
   }
 });
 
@@ -332,12 +369,12 @@ $('reqList').addEventListener('change', (e) => {
 $('reqList').addEventListener('click', (e) => {
   const id = e.target.dataset.reqDelete;
   if (!id) return;
-  const confirmed = window.confirm('Delete this requirement?');
-  if (!confirmed) return;
-  reqs = reqs.filter(r => r.id !== id);
-  save();
-  renderReqs();
-  showToast('Requirement removed.');
+  showConfirm('Delete this requirement?', () => {
+    reqs = reqs.filter(r => r.id !== id);
+    save();
+    renderReqs();
+    showToast('Requirement removed.');
+  });
 });
 
 document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => selectTab(b)));
